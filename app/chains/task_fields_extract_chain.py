@@ -1,8 +1,11 @@
-import json
-from pydantic import BaseModel, Field
+import logging
+from pydantic import BaseModel, Field, ValidationError
 from typing import Optional
 
 from app.services.llm_service import llm_structured_output
+from app.utils.json_utils import safe_json_loads
+
+logger = logging.getLogger(__name__)
 
 
 class HelpTaskFields(BaseModel):
@@ -43,4 +46,15 @@ async def extract_help_task_fields(user_message: str) -> HelpTaskFields:
         user_message=user_message,
         temperature=0.3,
     )
-    return HelpTaskFields(**json.loads(raw))
+
+    logger.info("task_fields_extract 原始输出：%r", raw)
+
+    try:
+        data = safe_json_loads(raw, source="task_fields_extract")
+        return HelpTaskFields(**data)
+    except (ValueError, ValidationError) as e:
+        logger.exception("task_fields_extract 输出解析失败，返回空提取结果。raw=%r", raw)
+        return HelpTaskFields(
+            missing_fields=["无法解析模型输出"],
+            safety_notes=[f"字段提取失败：{e}"],
+        )

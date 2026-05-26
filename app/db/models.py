@@ -1,10 +1,11 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import String, Text, Integer, Float, Boolean, DateTime, ForeignKey, JSON
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from pgvector.sqlalchemy import Vector
 
 from app.db.session import Base
 
@@ -13,8 +14,13 @@ def _uuid() -> str:
     return str(uuid.uuid4())
 
 
+def utc_now() -> datetime:
+    """Return a naive UTC datetime for use with TIMESTAMP WITHOUT TIME ZONE columns."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def _now() -> datetime:
-    return datetime.utcnow()
+    return utc_now()
 
 
 # ---- agent_configs ----
@@ -142,6 +148,7 @@ class KnowledgeChunk(Base):
     doc_id: Mapped[str] = mapped_column(String(64), ForeignKey("knowledge_docs.id"), nullable=False, index=True)
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[Optional[list[float]]] = mapped_column(Vector(1536), nullable=True)
     embedding_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     metadata_: Mapped[Optional[dict]] = mapped_column("metadata", JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
@@ -261,6 +268,21 @@ class ProfessionalAgentSession(Base):
     conversation_id: Mapped[Optional[str]] = mapped_column(String(64), ForeignKey("conversations.id"), nullable=True)
     handoff_context: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+
+# ---- user_memories ----
+class UserMemory(Base):
+    __tablename__ = "user_memories"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    external_user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    memory_type: Mapped[str] = mapped_column(String(64), default="fact")
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    importance: Mapped[float] = mapped_column(Float, default=0.5)
+    metadata_: Mapped[Optional[dict]] = mapped_column("metadata", JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 

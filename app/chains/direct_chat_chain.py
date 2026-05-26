@@ -19,9 +19,9 @@ DIRECT_CHAT_PROMPT = """你是"交小伴"校园生活智能体平台的私人助
 请根据用户的问题提供有帮助的回答。"""
 
 
-async def direct_chat(user_message: str) -> str:
-    messages = [
-        {"role": "system", "content": DIRECT_CHAT_PROMPT},
-        {"role": "user", "content": user_message},
-    ]
+async def direct_chat(user_message: str, recent_messages: list[dict] | None = None) -> str:
+    messages = [{"role": "system", "content": DIRECT_CHAT_PROMPT}]
+    if recent_messages:
+        messages.extend(recent_messages)
+    messages.append({"role": "user", "content": user_message})
     return await llm_chat(messages, temperature=0.7)

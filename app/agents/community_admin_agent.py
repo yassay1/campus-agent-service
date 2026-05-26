@@ -11,13 +11,17 @@ async def run_community_admin_analyze(
     author_external_user_id: str,
     tags: list[str] | None = None,
 ) -> dict:
-    run_id = await create_run("community_task_graph", {
-        "post_id": post_id,
-        "title": title,
-        "content": content,
-        "external_user_id": author_external_user_id,
-        "tags": tags or [],
-    })
+    run_id = await create_run(
+        db=None,
+        graph_name="community_task_graph",
+        input_data={
+            "post_id": post_id,
+            "title": title,
+            "content": content,
+            "external_user_id": author_external_user_id,
+            "tags": tags or [],
+        },
+    )
 
     initial_state = {
         "post_id": post_id,

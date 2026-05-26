@@ -11,6 +11,7 @@ from typing import TypedDict, Annotated, Literal
 
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
+from langgraph.types import interrupt
 
 from app.chains.reminder_fields_extract_chain import extract_reminder_fields
 from app.services.llm_service import LLMNotConfiguredError, LLM_NOT_CONFIGURED_MSG
@@ -97,6 +98,39 @@ async def node_create_reminder_draft(state: ReminderState) -> ReminderState:
     return state
 
 
+async def node_confirm_reminder(state: ReminderState) -> ReminderState:
+    """Interrupt 确认节点：等待用户确认后才创建提醒。"""
+    fields = state.get("reminder_fields", {})
+    title = fields.get("title", "提醒")
+
+    decision = interrupt({
+        "action": "create_reminder",
+        "summary": f"确认创建提醒「{title}」",
+        "detail": {
+            "title": title,
+            "remind_at": fields.get("remind_at"),
+            "repeat_rule": fields.get("repeat_rule"),
+            "description": fields.get("description"),
+        },
+        "message": f"是否确认创建提醒「{title}」？",
+    })
+
+    approved = isinstance(decision, dict) and decision.get("decision") == "approve"
+
+    if approved:
+        state["confirmation_id"] = "confirmed"
+    else:
+        state["response"] = "好的，已取消提醒创建。"
+        state["actions"] = [{"type": "cancelled", "action": "create_reminder"}]
+    return state
+
+
+def route_after_reminder_confirm(state: ReminderState) -> str:
+    if state.get("confirmation_id") == "confirmed":
+        return "create_reminder"
+    return "end"
+
+
 async def node_create_reminder(state: ReminderState) -> ReminderState:
     import uuid
     fields = state.get("reminder_fields", {})
@@ -113,13 +147,14 @@ async def node_return_error(state: ReminderState) -> ReminderState:
     return state
 
 
-def build_reminder_graph() -> StateGraph:
+def build_reminder_graph(checkpointer=None) -> StateGraph:
     workflow = StateGraph(ReminderState)
 
     workflow.add_node("reminder_entry", node_reminder_entry)
     workflow.add_node("extract_fields", node_extract_reminder_fields)
     workflow.add_node("ask_missing", node_ask_missing_reminder_fields)
     workflow.add_node("create_draft", node_create_reminder_draft)
+    workflow.add_node("confirm_reminder", node_confirm_reminder)
     workflow.add_node("create_reminder", node_create_reminder)
     workflow.add_node("return_error", node_return_error)
 
@@ -132,11 +167,17 @@ def build_reminder_graph() -> StateGraph:
         "return_error": "return_error",
     })
     workflow.add_edge("ask_missing", END)
-    workflow.add_edge("create_draft", "create_reminder")
+
+    # create_draft → confirm_reminder (interrupt) → create_reminder or END
+    workflow.add_edge("create_draft", "confirm_reminder")
+    workflow.add_conditional_edges("confirm_reminder", route_after_reminder_confirm, {
+        "create_reminder": "create_reminder",
+        "end": END,
+    })
     workflow.add_edge("create_reminder", END)
     workflow.add_edge("return_error", END)
 
-    return workflow.compile()
+    return workflow.compile(checkpointer=checkpointer)
 
 
 reminder_graph = build_reminder_graph()

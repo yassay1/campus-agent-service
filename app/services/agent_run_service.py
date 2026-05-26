@@ -1,10 +1,9 @@
 import uuid
-from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from app.db.models import AgentRun
+from app.db.models import AgentRun, utc_now
 
 
 def _uuid() -> str:
@@ -36,7 +35,7 @@ async def create_run(
         "output_data": None,
         "status": "running",
         "error_message": None,
-        "started_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": utc_now().isoformat(),
         "finished_at": None,
     }
     return run_id
@@ -56,13 +55,13 @@ async def update_run(
             run.output_data = output_data
             run.status = status
             run.error_message = error
-            run.finished_at = datetime.now(timezone.utc)
+            run.finished_at = utc_now()
             await db.flush()
     if run_id in _run_store:
         _run_store[run_id]["status"] = status
         _run_store[run_id]["output_data"] = output_data
         _run_store[run_id]["error_message"] = error
-        _run_store[run_id]["finished_at"] = datetime.now(timezone.utc).isoformat()
+        _run_store[run_id]["finished_at"] = utc_now().isoformat()
 
 
 async def get_run(run_id: str, db: AsyncSession | None = None) -> dict | None:

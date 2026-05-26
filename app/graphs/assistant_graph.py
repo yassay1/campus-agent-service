@@ -5,15 +5,16 @@ assistant_graph: 私人助理 Agent 主流程 (LangGraph StateGraph)
   START → create_run → load_memory → save_user_msg
   → assistant_planner → route_by_plan
     ├─ direct_chat_with_product_rag → END
-    ├─ professional_agent_dispatch → END
-    ├─ community_agent → END
-    └─ reminder_create → END
+    ├─ professional_agent_dispatch → confirm_check → END (interrupt) → action → END
+    ├─ community_agent → confirm_check → END (interrupt) → action → END
+    └─ reminder_create → confirm_check → END (interrupt) → action → END
 """
 
 from typing import TypedDict, Annotated, Literal
 
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
+from langgraph.types import interrupt
 
 from app.chains.assistant_planner_chain import plan_assistant_action, AssistantPlan
 from app.chains.direct_chat_chain import direct_chat
@@ -26,10 +27,10 @@ class AssistantState(TypedDict, total=False):
     external_user_id: str
     user_message: str
 
-    recent_messages: list[dict]       #最近消息
-    memory_context: dict              #记忆上下文
-    product_rag_context: list[dict]   #Rag检索结果
-    pending_state: dict | None        #待处理状态
+    recent_messages: list[dict]
+    memory_context: dict
+    product_rag_context: list[dict]
+    pending_state: dict | None
 
     assistant_plan: dict | None
     route_result: dict | None
@@ -51,6 +52,12 @@ class AssistantState(TypedDict, total=False):
     error: str | None
     community_intent: str | None
 
+    # Interrupt 相关
+    needs_confirm: bool
+    confirm_action: str | None
+    confirm_summary: str | None
+    confirm_detail: dict | None
+
 
 async def node_create_run(state: AssistantState) -> AssistantState:
     import uuid
@@ -59,14 +66,22 @@ async def node_create_run(state: AssistantState) -> AssistantState:
     state["confirmations"] = []
     state["tool_calls"] = []
     state["actions"] = []
+    state["needs_confirm"] = False
+    state["confirm_action"] = None
+    state["confirm_summary"] = None
+    state["confirm_detail"] = None
     return state
 
 
 async def node_load_memory(state: AssistantState) -> AssistantState:
-    state["recent_messages"] = []
-    state["memory_context"] = {}
-    state["product_rag_context"] = []
-    state["pending_state"] = None
+    if "recent_messages" not in state or state.get("recent_messages") is None:
+        state["recent_messages"] = []
+    if "memory_context" not in state or state.get("memory_context") is None:
+        state["memory_context"] = {}
+    if "product_rag_context" not in state or state.get("product_rag_context") is None:
+        state["product_rag_context"] = []
+    if "pending_state" not in state or state.get("pending_state") is None:
+        state["pending_state"] = None
     return state
 
 
@@ -97,6 +112,29 @@ async def node_assistant_planner(state: AssistantState) -> AssistantState:
     except LLMNotConfiguredError:
         state["error"] = LLM_NOT_CONFIGURED_MSG
         state["assistant_plan"] = {"route": "direct_chat_with_product_rag", "intent": "error", "reason": "LLM not configured"}
+    except Exception as e:
+        state["errors"] = state.get("errors", [])
+        state["errors"].append({
+            "node": "assistant_planner",
+            "error": str(e),
+        })
+        state["assistant_plan"] = {
+            "route": "direct_chat_with_product_rag",
+            "intent": "planner_error_fallback",
+            "confidence": 0.2,
+            "need_clarification": False,
+            "clarification_question": None,
+            "need_confirmation": False,
+            "target_agent": None,
+            "community_intent": None,
+            "planned_tools": [],
+            "reason": f"assistant_planner 执行失败，降级为普通聊天：{e}",
+        }
+        state["intent"] = "planner_error_fallback"
+        state["confidence"] = 0.2
+        state["suggested_agent"] = None
+        state["clarification_question"] = None
+        state["community_intent"] = None
     return state
 
 
@@ -125,7 +163,8 @@ async def node_direct_chat(state: AssistantState) -> AssistantState:
         state["final_response"] = state["error"]
         return state
     try:
-        answer = await direct_chat(state["user_message"])
+        recent = state.get("recent_messages", [])
+        answer = await direct_chat(state["user_message"], recent_messages=recent)
         state["response"] = answer
         state["final_response"] = answer
     except LLMNotConfiguredError:
@@ -151,24 +190,127 @@ async def node_professional_agent_dispatch(state: AssistantState) -> AssistantSt
         "handoff_context": state.get("user_message", ""),
         "display_name": display,
     }
-    msg = f"这个问题更适合交给{display}来讲。我已经为你创建好了对话，点击后可以继续。"
+    state["needs_confirm"] = True
+    state["confirm_action"] = "handoff_professional_agent"
+    state["confirm_summary"] = f"即将跳转到{display}"
+    state["confirm_detail"] = {"target_agent": target, "display_name": display}
+    msg = f"我建议让{display}来回答这个问题。是否确认跳转？"
     state["response"] = msg
     state["final_response"] = msg
-    state["actions"] = [{"type": "handoff", "target_agent": target}]
+    state["actions"] = [{"type": "handoff", "target_agent": target, "needs_confirm": True}]
     return state
 
 
 async def node_community_agent_entry(state: AssistantState) -> AssistantState:
-    state["response"] = "正在为你处理社区求助任务..."
-    state["final_response"] = state["response"]
-    state["actions"] = [{"type": "community_agent", "intent": state.get("community_intent")}]
+    intent = state.get("community_intent", "")
+    # 查找不需要确认，直接执行；创建和删除需要确认
+    if intent == "search_help_task":
+        state["needs_confirm"] = False
+        state["response"] = "正在为你查找求助任务..."
+        state["final_response"] = state["response"]
+        state["actions"] = [{"type": "community_agent", "intent": intent}]
+    else:
+        action_labels = {
+            "create_help_task": "创建求助任务",
+            "delete_own_help_task": "删除求助任务",
+        }
+        label = action_labels.get(intent, f"社区操作: {intent}")
+        state["needs_confirm"] = True
+        state["confirm_action"] = f"community_{intent}"
+        state["confirm_summary"] = label
+        state["confirm_detail"] = {"intent": intent, "message": state.get("user_message", "")}
+        state["response"] = f"即将执行「{label}」，请确认。"
+        state["final_response"] = state["response"]
+        state["actions"] = [{"type": "community_agent", "intent": intent, "needs_confirm": True}]
     return state
 
 
 async def node_reminder_create(state: AssistantState) -> AssistantState:
-    state["response"] = "正在为你创建提醒..."
+    state["needs_confirm"] = True
+    state["confirm_action"] = "create_reminder"
+    state["confirm_summary"] = "即将创建提醒"
+    state["confirm_detail"] = {"message": state.get("user_message", "")}
+    state["response"] = "我理解你想创建一个提醒，是否确认？"
     state["final_response"] = state["response"]
-    state["actions"] = [{"type": "reminder_create"}]
+    state["actions"] = [{"type": "reminder_create", "needs_confirm": True}]
+    return state
+
+
+async def node_confirm_check(state: AssistantState) -> AssistantState:
+    """Interrupt 确认节点。如果需要确认，暂停等待用户决策。"""
+    if not state.get("needs_confirm"):
+        return state
+
+    confirm_action = state.get("confirm_action", "unknown")
+    confirm_summary = state.get("confirm_summary", "")
+    confirm_detail = state.get("confirm_detail") or {}
+
+    decision = interrupt({
+        "action": confirm_action,
+        "summary": confirm_summary,
+        "detail": confirm_detail,
+        "message": f"请确认: {confirm_summary}",
+    })
+
+    if isinstance(decision, dict):
+        approved = decision.get("decision") == "approve"
+    else:
+        approved = False
+
+    if approved:
+        state["needs_confirm"] = False
+        state["confirmations"] = state.get("confirmations", [])
+        state["confirmations"].append({
+            "action": confirm_action,
+            "confirmed": True,
+            "summary": confirm_summary,
+        })
+    else:
+        state["needs_confirm"] = False
+        state["response"] = "好的，已取消该操作。还有其他需要帮助的吗？"
+        state["final_response"] = state["response"]
+        state["navigation_action"] = None
+        state["actions"] = [{"type": "cancelled", "action": confirm_action}]
+
+    return state
+
+
+async def node_execute_confirmed_action(state: AssistantState) -> AssistantState:
+    """根据确认后的 action 执行对应操作。"""
+    plan = state.get("assistant_plan", {})
+    route = plan.get("route", "direct_chat_with_product_rag")
+
+    if route == "professional_agent_dispatch":
+        target = state.get("suggested_agent", "teaching_agent")
+        display_names = {
+            "teaching_agent": "教学科石老师",
+            "postgraduate_agent": "保研学长阿泽",
+            "science_agent": "理科学霸小林",
+            "life_agent": "生活辅导员友老师",
+        }
+        display = display_names.get(target, target)
+        state["navigation_action"] = {
+            "action_type": "navigate",
+            "target_page": "professional_agent_chat",
+            "target_agent": target,
+            "agent_session_id": None,
+            "handoff_context": state.get("user_message", ""),
+            "display_name": display,
+        }
+        msg = f"已为你创建{display}的对话，点击即可继续。"
+        state["response"] = msg
+        state["final_response"] = msg
+        state["actions"] = [{"type": "handoff", "target_agent": target, "confirmed": True}]
+    elif route == "community_agent":
+        intent = state.get("community_intent", "")
+        state["response"] = "社区操作已确认，正在执行..."
+        state["final_response"] = state["response"]
+        state["actions"] = [{"type": "community_agent", "intent": intent, "confirmed": True}]
+    elif route == "reminder_create":
+        state["response"] = "提醒创建已确认，正在处理..."
+        state["final_response"] = state["response"]
+        state["actions"] = [{"type": "reminder_create", "confirmed": True}]
+
     return state
 
 
@@ -176,7 +318,20 @@ async def node_save_assistant_message(state: AssistantState) -> AssistantState:
     return state
 
 
-def build_assistant_graph() -> StateGraph:
+def route_after_confirm(state: AssistantState) -> Literal[
+    "direct_chat_with_product_rag",
+    "execute_confirmed_action",
+]:
+    """确认后路由：如果用户拒绝了，直接结束；如果批准了，执行对应操作。"""
+    # 检查是否被拒绝
+    confirmations = state.get("confirmations", [])
+    if confirmations and confirmations[-1].get("confirmed"):
+        return "execute_confirmed_action"
+    # 用户拒绝或不需要确认
+    return "direct_chat_with_product_rag"
+
+
+def build_assistant_graph(checkpointer=None) -> StateGraph:
     workflow = StateGraph(AssistantState)
 
     workflow.add_node("create_run", node_create_run)
@@ -187,6 +342,8 @@ def build_assistant_graph() -> StateGraph:
     workflow.add_node("professional_agent_dispatch", node_professional_agent_dispatch)
     workflow.add_node("community_agent", node_community_agent_entry)
     workflow.add_node("reminder_create", node_reminder_create)
+    workflow.add_node("confirm_check", node_confirm_check)
+    workflow.add_node("execute_confirmed_action", node_execute_confirmed_action)
     workflow.add_node("save_assistant_message", node_save_assistant_message)
 
     workflow.set_entry_point("create_run")
@@ -201,12 +358,19 @@ def build_assistant_graph() -> StateGraph:
         "reminder_create": "reminder_create",
     })
 
-    for node in ["direct_chat_with_product_rag", "professional_agent_dispatch",
-                  "community_agent", "reminder_create"]:
-        workflow.add_edge(node, "save_assistant_message")
+    for node in ["professional_agent_dispatch", "community_agent", "reminder_create"]:
+        workflow.add_edge(node, "confirm_check")
+
+    workflow.add_conditional_edges("confirm_check", route_after_confirm, {
+        "direct_chat_with_product_rag": "save_assistant_message",
+        "execute_confirmed_action": "execute_confirmed_action",
+    })
+
+    workflow.add_edge("execute_confirmed_action", "save_assistant_message")
+    workflow.add_edge("direct_chat_with_product_rag", "save_assistant_message")
     workflow.add_edge("save_assistant_message", END)
 
-    return workflow.compile()
+    return workflow.compile(checkpointer=checkpointer)
 
 
 assistant_graph = build_assistant_graph()

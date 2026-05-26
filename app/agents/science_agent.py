@@ -8,13 +8,20 @@ async def run_science_agent(
     user_message: str,
     external_user_id: str,
     conversation_id: str | None = None,
+    rag_context: list[dict] | None = None,
+    recent_messages: list[dict] | None = None,
 ) -> dict:
-    run_id = await create_run("professional_agent_graph", {
-        "user_message": user_message,
-        "agent_name": "science_agent",
-        "external_user_id": external_user_id,
-        "conversation_id": conversation_id,
-    })
+    run_id = await create_run(
+        db=None,
+        graph_name="professional_agent_graph",
+        input_data={
+            "user_message": user_message,
+            "agent_name": "science_agent",
+            "external_user_id": external_user_id,
+            "conversation_id": conversation_id,
+        },
+        conversation_id=conversation_id,
+    )
 
     initial_state = {
         "user_message": user_message,
@@ -22,7 +29,9 @@ async def run_science_agent(
         "external_user_id": external_user_id,
         "conversation_id": conversation_id,
         "system_prompt": None,
-        "rag_context": None,
+        "rag_context": rag_context or [],
+        "recent_messages": recent_messages or [],
+        "sources": None,
         "response": None,
         "boundary_reminder": None,
         "error": None,

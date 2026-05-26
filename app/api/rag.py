@@ -1,5 +1,6 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from app.db.session import get_db, AsyncSession
 from app.schemas.rag import RAGSearchRequest, RAGSearchResponse, RAGChunkResult
 from app.services.rag_service import search_knowledge
 from app.chains.rag_answer_chain import generate_rag_answer
@@ -9,8 +10,9 @@ router = APIRouter(prefix="/api/rag", tags=["rag"])
 
 
 @router.post("/search", response_model=RAGSearchResponse)
-async def rag_search(req: RAGSearchRequest):
+async def rag_search(req: RAGSearchRequest, db: AsyncSession = Depends(get_db)):
     chunks = await search_knowledge(
+        db=db,
         query=req.query,
         agent_name=req.agent_name or "",
         top_k=req.top_k,

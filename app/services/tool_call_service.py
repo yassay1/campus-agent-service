@@ -1,9 +1,8 @@
 import uuid
-from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import ToolCall
+from app.db.models import ToolCall, utc_now
 
 
 def _uuid() -> str:
@@ -42,5 +41,5 @@ async def log_tool_call_end(
         tc.output_result = output_result or {}
         tc.status = status
         tc.error_message = error_message
-        tc.finished_at = datetime.now(timezone.utc)
+        tc.finished_at = utc_now()
         await db.flush()

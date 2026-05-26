@@ -9,11 +9,15 @@ async def run_assistant(
     external_user_id: str,
     conversation_id: str | None = None,
 ) -> dict:
-    run_id = await create_run("assistant_graph", {
-        "user_message": user_message,
-        "external_user_id": external_user_id,
-        "conversation_id": conversation_id,
-    })
+    run_id = await create_run(
+        db=None,
+        graph_name="assistant_graph",
+        input_data={
+            "user_message": user_message,
+            "external_user_id": external_user_id,
+            "conversation_id": conversation_id,
+        },
+    )
 
     initial_state = {
         "user_message": user_message,

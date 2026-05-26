@@ -25,6 +25,7 @@ class AgentChatRequest(BaseModel):
     agent_name: str = Field(..., description="目标 Agent 名称")
     message: str = Field(..., min_length=1, max_length=4096)
     conversation_id: Optional[str] = None
+    session_id: Optional[str] = Field(None, description="专业 Agent 会话 ID")
     external_user_id: str = Field(..., min_length=1, max_length=128)
 
 

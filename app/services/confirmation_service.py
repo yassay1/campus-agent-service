@@ -1,10 +1,10 @@
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from app.db.models import ConfirmationRecord
+from app.db.models import ConfirmationRecord, utc_now
 
 
 def _uuid() -> str:
@@ -20,7 +20,7 @@ async def create_confirmation(
     risk_level: str = "low",
     expires_in_seconds: int = 300,
 ) -> ConfirmationRecord:
-    now = datetime.now(timezone.utc)
+    now = utc_now()
     record = ConfirmationRecord(
         id=_uuid(),
         external_user_id=external_user_id,
@@ -48,7 +48,7 @@ async def resolve_confirmation(
     if record is None:
         return None
     record.status = "confirmed" if approved else "cancelled"
-    record.confirmed_at = datetime.now(timezone.utc)
+    record.confirmed_at = utc_now()
     await db.flush()
     return record
 

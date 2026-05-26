@@ -18,11 +18,11 @@ AGENT_RECOMMEND_PROMPT = """你是"交小伴"校园生活智能体平台的 Agen
 
 
 async def recommend_agent(user_message: str) -> dict:
-    import json
+    from app.utils.json_utils import safe_json_loads
 
     raw = await llm_structured_output(
         system_prompt=AGENT_RECOMMEND_PROMPT,
         user_message=user_message,
         temperature=0.3,
     )
-    return json.loads(raw)
+    return safe_json_loads(raw, source="agent_recommend")

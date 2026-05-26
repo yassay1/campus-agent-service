@@ -1,9 +1,12 @@
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from app.api import health, assistant, agents, community_agent, safety, confirmations, rag, agent_runs, reminders
+from app.config.settings import get_settings
 
 logging.basicConfig(
     level=logging.INFO,
@@ -11,12 +14,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger("campus_agent")
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = get_settings()
+    conn_string = (
+        f"postgresql://{settings.postgres_user}:{settings.postgres_password}"
+        f"@{settings.postgres_host}:{settings.postgres_port}/{settings.postgres_db}"
+    )
+    async with AsyncPostgresSaver.from_conn_string(conn_string) as checkpointer:
+        await checkpointer.setup()
+        app.state.checkpointer = checkpointer
+        logger.info("Checkpointer initialized and ready")
+        yield
+    logger.info("Checkpointer closed")
+
+
 app = FastAPI(
     title="交小伴 Agent Service",
     description="校园生活智能体平台 - Agent 后端服务层。提供私人助理、专业 Agent、社区管理员 Agent 等 AI 能力。",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 app.include_router(health.router)
