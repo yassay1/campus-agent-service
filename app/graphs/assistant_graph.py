@@ -18,6 +18,8 @@ from langgraph.types import interrupt
 
 from app.chains.assistant_planner_chain import plan_assistant_action, AssistantPlan
 from app.chains.direct_chat_chain import direct_chat
+from app.graphs.community_agent_subgraph import community_agent_subgraph
+from app.graphs.reminder_graph import reminder_graph
 from app.services.llm_service import LLMNotConfiguredError, LLM_NOT_CONFIGURED_MSG
 
 
@@ -164,7 +166,12 @@ async def node_direct_chat(state: AssistantState) -> AssistantState:
         return state
     try:
         recent = state.get("recent_messages", [])
-        answer = await direct_chat(state["user_message"], recent_messages=recent)
+        answer = await direct_chat(
+            state["user_message"],
+            recent_messages=recent,
+            memory_context=state.get("memory_context", {}),
+            product_rag_context=state.get("product_rag_context", []),
+        )
         state["response"] = answer
         state["final_response"] = answer
     except LLMNotConfiguredError:
@@ -303,11 +310,31 @@ async def node_execute_confirmed_action(state: AssistantState) -> AssistantState
         state["actions"] = [{"type": "handoff", "target_agent": target, "confirmed": True}]
     elif route == "community_agent":
         intent = state.get("community_intent", "")
-        state["response"] = "社区操作已确认，正在执行..."
+        sub_state = {
+            "external_user_id": state.get("external_user_id", ""),
+            "conversation_id": state.get("conversation_id", ""),
+            "community_intent": intent,
+            "user_message": state.get("user_message", ""),
+            "messages": [],
+        }
+        sub_result = await community_agent_subgraph.ainvoke(sub_state)
+        state["response"] = sub_result.get("response", "社区操作完成。")
         state["final_response"] = state["response"]
-        state["actions"] = [{"type": "community_agent", "intent": intent, "confirmed": True}]
+        state["actions"] = sub_result.get("actions", [{"type": "community_agent", "intent": intent, "confirmed": True}])
     elif route == "reminder_create":
-        state["response"] = "提醒创建已确认，正在处理..."
+        sub_state = {
+            "user_message": state.get("user_message", ""),
+            "external_user_id": state.get("external_user_id", ""),
+            "conversation_id": state.get("conversation_id", ""),
+            "messages": [],
+            "reminder_fields": None,
+            "missing_fields": [],
+            "draft_id": None,
+            "confirmation_id": None,
+            "reminder_id": None,
+        }
+        sub_result = await reminder_graph.ainvoke(sub_state)
+        state["response"] = sub_result.get("response", "提醒创建完成。")
         state["final_response"] = state["response"]
         state["actions"] = [{"type": "reminder_create", "confirmed": True}]
 

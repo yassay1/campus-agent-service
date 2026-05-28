@@ -12,14 +12,15 @@ from datetime import datetime, timezone
 
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
+from langgraph.types import interrupt
 
 from app.chains.task_fields_extract_chain import extract_help_task_fields
 from app.services.llm_service import LLMNotConfiguredError, LLM_NOT_CONFIGURED_MSG
-from app.services.mock_community_adapter import (
-    search_help_tasks as mock_search,
-    search_my_help_tasks as mock_search_my,
-    publish_help_task as mock_publish,
-    delete_help_task as mock_delete,
+from app.services.community_service_adapter import (
+    search_help_tasks,
+    search_my_help_tasks,
+    publish_help_task,
+    delete_help_task,
     HelpTaskSearchQuery,
 )
 
@@ -124,10 +125,36 @@ async def node_create_task_draft(state: CommunityAgentState) -> CommunityAgentSt
     return state
 
 
+async def node_confirm_publish(state: CommunityAgentState) -> CommunityAgentState:
+    fields = state.get("task_fields", {})
+    title = fields.get("title", "求助任务")
+    decision = interrupt({
+        "action": "confirm_publish_task",
+        "summary": f"确认发布求助任务「{title}」",
+        "detail": {
+            "draft_id": state.get("task_draft_id"),
+            "task_fields": fields,
+        },
+        "message": f"是否确认发布求助任务「{title}」？",
+    })
+
+    if isinstance(decision, dict) and decision.get("decision") == "approve":
+        return state
+    state["response"] = "好的，已取消发布。还有其他需要帮助的吗？"
+    state["actions"] = [{"type": "task_cancelled", "draft_id": state.get("task_draft_id")}]
+    return state
+
+
+def route_after_confirm_publish(state: CommunityAgentState) -> Literal["publish_task", "return_cancelled"]:
+    if state.get("response") and "已取消" in state.get("response", ""):
+        return "return_cancelled"
+    return "publish_task"
+
+
 async def node_publish_task(state: CommunityAgentState) -> CommunityAgentState:
     fields = state.get("task_fields", {})
     try:
-        result = await mock_publish(
+        result = await publish_help_task(
             title=fields.get("title", "求助任务"),
             description=fields.get("description", ""),
             external_user_id=state["external_user_id"],
@@ -150,7 +177,7 @@ async def node_create_task_error(state: CommunityAgentState) -> CommunityAgentSt
 
 async def node_delete_task_search(state: CommunityAgentState) -> CommunityAgentState:
     try:
-        results = await mock_search_my(state["external_user_id"])
+        results = await search_my_help_tasks(state["external_user_id"])
         state["search_results"] = [
             {
                 "task_id": t.task_id,
@@ -193,8 +220,25 @@ async def node_delete_task_execute(state: CommunityAgentState) -> CommunityAgent
         state["response"] = "请确认你想删除哪个任务，可以告诉我任务 ID 或标题。"
         return state
 
+    decision = interrupt({
+        "action": "confirm_delete_task",
+        "summary": f"确认删除任务「{matched['title']}」",
+        "detail": {
+            "task_id": matched["task_id"],
+            "task_title": matched["title"],
+        },
+        "message": f"是否确认删除任务「{matched['title']}」？",
+    })
+
+    if isinstance(decision, dict) and decision.get("decision") == "approve":
+        pass
+    else:
+        state["response"] = "好的，已取消删除。还有其他需要帮助的吗？"
+        state["actions"] = [{"type": "task_delete_cancelled", "task_id": matched["task_id"]}]
+        return state
+
     try:
-        result = await mock_delete(state["external_user_id"], matched["task_id"])
+        result = await delete_help_task(state["external_user_id"], matched["task_id"])
         state["response"] = f"任务「{matched['title']}」已成功删除。"
         state["actions"] = [{"type": "task_deleted", "task_id": matched["task_id"]}]
     except Exception as e:
@@ -208,7 +252,7 @@ async def node_delete_task_execute(state: CommunityAgentState) -> CommunityAgent
 async def node_search_task_execute(state: CommunityAgentState) -> CommunityAgentState:
     try:
         query = HelpTaskSearchQuery(keyword=state["user_message"], limit=10)
-        results = await mock_search(query)
+        results = await search_help_tasks(query)
 
         if not results:
             state["response"] = "没有找到相关的求助任务。你可以尝试换个关键词搜索。"
@@ -244,6 +288,7 @@ def build_community_agent_subgraph() -> StateGraph:
     workflow.add_node("create_help_task_extract", node_create_task_extract)
     workflow.add_node("ask_missing_fields", node_ask_missing_fields)
     workflow.add_node("create_task_draft", node_create_task_draft)
+    workflow.add_node("confirm_publish", node_confirm_publish)
     workflow.add_node("publish_task", node_publish_task)
     workflow.add_node("create_task_error", node_create_task_error)
 
@@ -272,7 +317,11 @@ def build_community_agent_subgraph() -> StateGraph:
         "return_error": "create_task_error",
     })
     workflow.add_edge("ask_missing_fields", END)
-    workflow.add_edge("create_task_draft", "publish_task")
+    workflow.add_edge("create_task_draft", "confirm_publish")
+    workflow.add_conditional_edges("confirm_publish", route_after_confirm_publish, {
+        "publish_task": "publish_task",
+        "return_cancelled": END,
+    })
     workflow.add_edge("publish_task", END)
     workflow.add_edge("create_task_error", END)
 

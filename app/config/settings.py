@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     def llm_configured(self) -> bool:
         return bool(self.llm_api_key and self.llm_api_base and self.llm_model_name)
 
+    @property
+    def debug(self) -> bool:
+        return self.agent_service_debug
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "case_sensitive": False}
 
 

@@ -60,6 +60,25 @@ async def assistant_chat(req: ChatRequest, request: Request, db: AsyncSession = 
         for m in reversed(recent_msgs)
     ]
 
+    # 长期用户记忆（加载失败降级为空，不影响主流程）
+    try:
+        from app.services.long_term_memory_service import get_user_memories
+        memories = await get_user_memories(db, req.external_user_id, limit=20)
+        memory_context = {m.memory_type: m.content for m in memories}
+    except Exception:
+        logger.warning("Failed to load long-term memory for user %s", req.external_user_id)
+        memory_context = {}
+
+    # 产品知识 RAG 上下文（加载失败降级为空，不影响主流程）
+    try:
+        from app.services.rag_service import search_knowledge
+        product_rag_context = await search_knowledge(
+            db, req.message, agent_name="", top_k=5
+        )
+    except Exception:
+        logger.warning("Failed to load RAG context for message: %s", req.message[:50])
+        product_rag_context = []
+
     run_id = await create_run(
         db=db,
         graph_name="assistant_graph",
@@ -73,6 +92,8 @@ async def assistant_chat(req: ChatRequest, request: Request, db: AsyncSession = 
         "conversation_id": conversation_id,
         "messages": [],
         "recent_messages": recent_dicts,
+        "memory_context": memory_context,
+        "product_rag_context": product_rag_context,
     }
 
     try:
@@ -106,7 +127,7 @@ async def assistant_chat(req: ChatRequest, request: Request, db: AsyncSession = 
         await update_run(run_id, db=db, output_data=result, status="completed")
 
         final_response = result.get("final_response") or result.get("response", "")
-        await save_message(db, conversation_id, "assistant", final_response)
+        saved_msg = await save_message(db, conversation_id, "assistant", final_response)
 
         actions = result.get("actions", [])
 
@@ -145,7 +166,7 @@ async def assistant_chat(req: ChatRequest, request: Request, db: AsyncSession = 
 
         return ChatResponse(
             conversation_id=conversation_id,
-            message_id=run_id,
+            message_id=saved_msg.id,
             role="assistant",
             content=final_response,
             agent_name=result.get("suggested_agent"),
@@ -176,7 +197,16 @@ async def assistant_resume(req: ResumeRequest, request: Request, db: AsyncSessio
     if not conversation_id or conversation_id == "new":
         raise HTTPException(status_code=400, detail="需要有效的 conversation_id")
 
-    run_id = str(uuid.uuid4())
+    run_id = await create_run(
+        db=db,
+        graph_name="assistant_graph_resume",
+        input_data={
+            "conversation_id": conversation_id,
+            "decision": req.decision,
+            "payload": req.payload,
+        },
+        conversation_id=conversation_id,
+    )
 
     resume_value = {
         "decision": req.decision,
@@ -194,7 +224,7 @@ async def assistant_resume(req: ResumeRequest, request: Request, db: AsyncSessio
         await update_run(run_id, db=db, output_data=result, status="completed")
 
         final_response = result.get("final_response") or result.get("response", "")
-        await save_message(db, conversation_id, "assistant", final_response)
+        saved_msg = await save_message(db, conversation_id, "assistant", final_response)
 
         actions = result.get("actions", [])
 
@@ -234,7 +264,7 @@ async def assistant_resume(req: ResumeRequest, request: Request, db: AsyncSessio
 
         return ResumeResponse(
             conversation_id=conversation_id,
-            message_id=run_id,
+            message_id=saved_msg.id,
             role="assistant",
             content=final_response,
             agent_name=result.get("suggested_agent"),
@@ -245,6 +275,7 @@ async def assistant_resume(req: ResumeRequest, request: Request, db: AsyncSessio
     except Exception as e:
         logger.error("assistant_resume 处理失败：%s\n%s", e, traceback.format_exc())
         await db.rollback()
+        await update_run(run_id, db=db, error=str(e), status="failed")
         return ResumeResponse(
             conversation_id=conversation_id,
             message_id=run_id,

@@ -19,8 +19,28 @@ DIRECT_CHAT_PROMPT = """你是"交小伴"校园生活智能体平台的私人助
 请根据用户的问题提供有帮助的回答。"""
 
 
-async def direct_chat(user_message: str, recent_messages: list[dict] | None = None) -> str:
-    messages = [{"role": "system", "content": DIRECT_CHAT_PROMPT}]
+async def direct_chat(
+    user_message: str,
+    recent_messages: list[dict] | None = None,
+    memory_context: dict | None = None,
+    product_rag_context: list[dict] | None = None,
+) -> str:
+    system_parts = [DIRECT_CHAT_PROMPT]
+
+    if memory_context:
+        mem_lines = ["\n## 用户长期记忆"]
+        for mem_type, content in memory_context.items():
+            mem_lines.append(f"- [{mem_type}] {content}")
+        system_parts.append("\n".join(mem_lines))
+
+    if product_rag_context:
+        rag_lines = ["\n## 相关校园/产品知识"]
+        for doc in product_rag_context:
+            rag_lines.append(f"- {doc.get('content', '')[:300]}")
+        system_parts.append("\n".join(rag_lines))
+
+    system_prompt = "\n".join(system_parts)
+    messages = [{"role": "system", "content": system_prompt}]
     if recent_messages:
         messages.extend(recent_messages)
     messages.append({"role": "user", "content": user_message})

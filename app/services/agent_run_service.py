@@ -28,6 +28,7 @@ async def create_run(
         db.add(run)
         await db.flush()
     # 同时保留内存存储作为 fallback（当没有 DB session 时）
+    _cleanup_run_store()
     _run_store[run_id] = {
         "run_id": run_id,
         "graph_name": graph_name,
@@ -83,3 +84,13 @@ async def get_run(run_id: str, db: AsyncSession | None = None) -> dict | None:
 
 
 _run_store: dict[str, dict] = {}
+_MAX_RUN_STORE_SIZE = 10_000
+
+
+def _cleanup_run_store() -> None:
+    """超过上限时清理最早的一半记录，防止内存无限增长."""
+    if len(_run_store) > _MAX_RUN_STORE_SIZE:
+        remove_count = len(_run_store) // 2
+        keys_to_remove = list(_run_store.keys())[:remove_count]
+        for key in keys_to_remove:
+            del _run_store[key]

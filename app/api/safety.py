@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter
 
@@ -17,10 +17,10 @@ async def safety_check(req: SafetyCheckRequest):
         context=req.context,
     )
     return SafetyCheckResponse(
-        check_id="sc_" + datetime.utcnow().strftime("%Y%m%d%H%M%S"),
+        check_id="sc_" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
         risk_level=result["risk_level"],
         risk_reason=result["risk_reason"],
         is_blocked=result["is_blocked"],
         requires_confirmation=result["requires_confirmation"],
-        checked_at=datetime.utcnow(),
+        checked_at=datetime.now(timezone.utc),
     )

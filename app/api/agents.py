@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
 
@@ -13,10 +13,7 @@ from app.schemas.agent import (
 from pydantic import BaseModel, Field
 
 from app.chains.agent_recommend_chain import recommend_agent
-from app.agents.teaching_agent import run_teaching_agent
-from app.agents.postgraduate_agent import run_postgraduate_agent
-from app.agents.science_agent import run_science_agent
-from app.agents.life_agent import run_life_agent
+from app.agents.professional_agent_runner import run_professional_agent
 from app.services.rag_service import search_knowledge
 from app.services.llm_service import check_llm_configured
 from app.services.conversation_service import get_or_create_conversation
@@ -41,12 +38,12 @@ class CreateSessionResponse(BaseModel):
     created_at: datetime
 
 
-_AGENT_RUNNER = {
-    "teaching_agent": run_teaching_agent,
-    "postgraduate_agent": run_postgraduate_agent,
-    "science_agent": run_science_agent,
-    "life_agent": run_life_agent,
-}
+_VALID_AGENTS = frozenset({
+    "teaching_agent",
+    "postgraduate_agent",
+    "science_agent",
+    "life_agent",
+})
 
 
 @router.post("/recommend", response_model=AgentRecommendResponse)
@@ -68,16 +65,16 @@ async def agent_recommend(req: AgentRecommendRequest):
 
 @router.post("/chat", response_model=AgentChatResponse)
 async def agent_chat(req: AgentChatRequest, db: AsyncSession = Depends(get_db)):
-    runner = _AGENT_RUNNER.get(req.agent_name)
-    if runner is None:
+    if req.agent_name not in _VALID_AGENTS:
+        valid = ", ".join(sorted(_VALID_AGENTS))
         return AgentChatResponse(
             conversation_id=req.conversation_id or "new",
             message_id="error",
             agent_name=req.agent_name,
             role="assistant",
-            content=f"未找到 Agent: {req.agent_name}。可用的 Agent: teaching_agent, postgraduate_agent, science_agent, life_agent",
+            content=f"未找到 Agent: {req.agent_name}。可用的 Agent: {valid}",
             boundary_reminder=None,
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
         )
 
     # 如果提供了 session_id，验证并加载会话上下文
@@ -98,7 +95,7 @@ async def agent_chat(req: AgentChatRequest, db: AsyncSession = Depends(get_db)):
                 role="assistant",
                 content=f"未找到会话: {req.session_id}",
                 boundary_reminder=None,
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(timezone.utc),
             )
         if session.external_user_id != req.external_user_id:
             return AgentChatResponse(
@@ -108,7 +105,7 @@ async def agent_chat(req: AgentChatRequest, db: AsyncSession = Depends(get_db)):
                 role="assistant",
                 content="无权访问此会话。",
                 boundary_reminder=None,
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(timezone.utc),
             )
         handoff_context = session.handoff_context
         if session.conversation_id:
@@ -136,7 +133,8 @@ async def agent_chat(req: AgentChatRequest, db: AsyncSession = Depends(get_db)):
             top_k=5,
         )
 
-    result = await runner(
+    result = await run_professional_agent(
+        agent_name=req.agent_name,
         user_message=req.message,
         external_user_id=req.external_user_id,
         conversation_id=conversation_id,
@@ -153,7 +151,7 @@ async def agent_chat(req: AgentChatRequest, db: AsyncSession = Depends(get_db)):
         role=result["role"],
         content=result["content"],
         boundary_reminder=result.get("boundary_reminder"),
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
     )
 
 

@@ -1,10 +1,9 @@
-"""理科学霸小林 Agent —— 高数、线代、大学物理、编程学习、复习计划、题目讲解思路。"""
-
 from app.graphs.professional_agent_graph import professional_agent_graph
 from app.services.agent_run_service import create_run, update_run
 
 
-async def run_science_agent(
+async def run_professional_agent(
+    agent_name: str,
     user_message: str,
     external_user_id: str,
     conversation_id: str | None = None,
@@ -16,7 +15,7 @@ async def run_science_agent(
         graph_name="professional_agent_graph",
         input_data={
             "user_message": user_message,
-            "agent_name": "science_agent",
+            "agent_name": agent_name,
             "external_user_id": external_user_id,
             "conversation_id": conversation_id,
         },
@@ -25,7 +24,7 @@ async def run_science_agent(
 
     initial_state = {
         "user_message": user_message,
-        "agent_name": "science_agent",
+        "agent_name": agent_name,
         "external_user_id": external_user_id,
         "conversation_id": conversation_id,
         "system_prompt": None,
@@ -44,7 +43,7 @@ async def run_science_agent(
         return {
             "conversation_id": conversation_id or "new",
             "message_id": run_id,
-            "agent_name": "science_agent",
+            "agent_name": agent_name,
             "role": "assistant",
             "content": result.get("response", ""),
             "boundary_reminder": result.get("boundary_reminder"),
@@ -54,7 +53,7 @@ async def run_science_agent(
         return {
             "conversation_id": conversation_id or "new",
             "message_id": run_id,
-            "agent_name": "science_agent",
+            "agent_name": agent_name,
             "role": "assistant",
             "content": f"处理请求时出错：{e}",
             "boundary_reminder": None,
